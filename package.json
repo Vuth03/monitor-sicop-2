@@ -1,0 +1,11 @@
+{
+  "name": "monitor-sicop-2",
+  "version": "1.0.0",
+  "description": "Monitor automático SICOP expediente 4201",
+  "main": "monitor.js",
+  "dependencies": {
+    "cheerio": "latest",
+    "nodemailer": "latest",
+    "playwright": "latest"
+  }
+}
