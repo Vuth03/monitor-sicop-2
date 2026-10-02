@@ -43,12 +43,20 @@ jobs:
       - name: Guardar estado del monitor
         if: always()
         run: |
-          if [ -n "$(git status --porcelain -- state.json health.json)" ]; then
-            git config user.name "Monitor SICOP 2"
-            git config user.email "actions@github.com"
-            git add state.json health.json
+          git config user.name "Monitor SICOP 2"
+          git config user.email "actions@github.com"
+
+          if [ -f state.json ]; then
+            git add state.json
+          fi
+
+          if [ -f health.json ]; then
+            git add health.json
+          fi
+
+          if git diff --cached --quiet; then
+            echo "No hay cambios que guardar."
+          else
             git commit -m "Actualizar estado Monitor SICOP 2 [skip ci]"
             git push
-          else
-            echo "No hay cambios que guardar."
           fi
