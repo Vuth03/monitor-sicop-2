@@ -1,0 +1,54 @@
+name: Monitor SICOP 2
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: monitor-sicop-2
+  cancel-in-progress: false
+
+jobs:
+
+  revisar-sicop:
+
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+
+      - name: Descargar repositorio
+        uses: actions/checkout@v4
+
+      - name: Configurar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Instalar dependencias
+        run: npm install
+
+      - name: Instalar navegador Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Revisar SICOP
+        env:
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          ALERT_TO: ${{ secrets.ALERT_TO }}
+        run: node monitor.js
+
+      - name: Guardar estado del monitor
+        if: always()
+        run: |
+          if [ -n "$(git status --porcelain -- state.json health.json)" ]; then
+            git config user.name "Monitor SICOP 2"
+            git config user.email "actions@github.com"
+            git add state.json health.json
+            git commit -m "Actualizar estado Monitor SICOP 2 [skip ci]"
+            git push
+          else
+            echo "No hay cambios que guardar."
+          fi
