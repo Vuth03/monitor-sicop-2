@@ -12,6 +12,17 @@ const SICOP_URL =
 
 const STATE_FILE = 'state.json';
 const HEALTH_FILE = 'health.json';
+const PENDING_FILE = 'pending_change.json';
+
+// Versión de la lógica de normalización.
+// Sirve para que el monitor reconozca automáticamente
+// que cambiamos la forma de comparar la página.
+const NORMALIZATION_VERSION = 2;
+
+
+// ============================================================
+// UTILIDADES
+// ============================================================
 
 function normalizarTexto(texto) {
   return (texto || '')
@@ -20,41 +31,26 @@ function normalizarTexto(texto) {
     .trim();
 }
 
-function extraerContenidoRelevante(html) {
-  const $ = cheerio.load(html);
-
-  $('script, style, noscript').remove();
-
-  $('*').each((i, el) => {
-    if (el.attribs) {
-      delete el.attribs.style;
-      delete el.attribs.onclick;
-      delete el.attribs.onchange;
-      delete el.attribs.onblur;
-      delete el.attribs.class;
-      delete el.attribs.id;
-    }
-  });
-
-  return normalizarTexto($('body').text());
-}
-
-function crearHash(texto) {
-  return crypto
-    .createHash('sha256')
-    .update(texto, 'utf8')
-    .digest('hex');
-}
 
 function cargarJSON(archivo) {
   if (!fs.existsSync(archivo)) {
     return null;
   }
 
-  return JSON.parse(
-    fs.readFileSync(archivo, 'utf8')
-  );
+  try {
+    return JSON.parse(
+      fs.readFileSync(archivo, 'utf8')
+    );
+  } catch (error) {
+    console.error(
+      `No fue posible leer ${archivo}:`,
+      error
+    );
+
+    return null;
+  }
 }
+
 
 function guardarJSON(archivo, data) {
   fs.writeFileSync(
@@ -63,11 +59,117 @@ function guardarJSON(archivo, data) {
   );
 }
 
+
+function eliminarArchivo(archivo) {
+  if (fs.existsSync(archivo)) {
+    fs.unlinkSync(archivo);
+  }
+}
+
+
+function crearHash(texto) {
+  return crypto
+    .createHash('sha256')
+    .update(texto, 'utf8')
+    .digest('hex');
+}
+
+
+// ============================================================
+// LIMPIEZA DEL HTML
+// ============================================================
+
+function extraerContenidoRelevante(html) {
+
+  const $ = cheerio.load(html);
+
+  // Elementos técnicos que no forman parte del expediente visible.
+  $('script, style, noscript').remove();
+
+
+  // ----------------------------------------------------------
+  // FILAS INESTABLES DETECTADAS EN SICOP
+  // ----------------------------------------------------------
+  //
+  // Estas filas fueron comprobadas como variables entre
+  // consultas aun cuando el expediente no había cambiado.
+  //
+  // Importante:
+  // NO eliminamos "Estado" del expediente.
+  // Únicamente eliminamos información técnica de firma
+  // y certificado digital.
+  // ----------------------------------------------------------
+
+  const etiquetasInestables = [
+    'Encargado',
+    'Estado de la firma',
+    'Fecha aprobación (Firma)',
+    'Vigencia certificado',
+    'DN Certificado',
+    'CA Emisora'
+  ];
+
+
+  $('tr').each((i, fila) => {
+
+    const textosTH = $(fila)
+      .find('th')
+      .map((j, th) => normalizarTexto($(th).text()))
+      .get();
+
+
+    const esFilaInestable = textosTH.some(texto =>
+      etiquetasInestables.includes(texto)
+    );
+
+
+    if (esFilaInestable) {
+      $(fila).remove();
+    }
+
+  });
+
+
+  // Quitamos atributos visuales/técnicos que podrían variar
+  // sin representar un cambio real del expediente.
+
+  $('*').each((i, el) => {
+
+    if (el.attribs) {
+
+      delete el.attribs.style;
+      delete el.attribs.onclick;
+      delete el.attribs.onchange;
+      delete el.attribs.onblur;
+      delete el.attribs.class;
+      delete el.attribs.id;
+
+    }
+
+  });
+
+
+  return normalizarTexto(
+    $('body').text()
+  );
+}
+
+
+// ============================================================
+// DIFERENCIAS PARA MOSTRAR EN EL CORREO
+// ============================================================
+
 function calcularDiferencias(anterior, actual) {
-  const anteriorPalabras = anterior.split(' ');
-  const actualPalabras = actual.split(' ');
+
+  const anteriorPalabras =
+    anterior.split(' ');
+
+  const actualPalabras =
+    actual.split(' ');
+
 
   let inicio = 0;
+
 
   while (
     inicio < anteriorPalabras.length &&
@@ -77,90 +179,176 @@ function calcularDiferencias(anterior, actual) {
     inicio++;
   }
 
-  let finAnterior = anteriorPalabras.length - 1;
-  let finActual = actualPalabras.length - 1;
+
+  let finAnterior =
+    anteriorPalabras.length - 1;
+
+  let finActual =
+    actualPalabras.length - 1;
+
 
   while (
     finAnterior >= inicio &&
     finActual >= inicio &&
     anteriorPalabras[finAnterior] === actualPalabras[finActual]
   ) {
+
     finAnterior--;
     finActual--;
+
   }
 
-  const desde = Math.max(0, inicio - 40);
 
-  const hastaAnterior = Math.min(
-    anteriorPalabras.length,
-    finAnterior + 41
-  );
+  const desde =
+    Math.max(
+      0,
+      inicio - 40
+    );
 
-  const hastaActual = Math.min(
-    actualPalabras.length,
-    finActual + 41
-  );
+
+  const hastaAnterior =
+    Math.min(
+      anteriorPalabras.length,
+      finAnterior + 41
+    );
+
+
+  const hastaActual =
+    Math.min(
+      actualPalabras.length,
+      finActual + 41
+    );
+
 
   return {
+
     anterior:
-      anteriorPalabras.slice(desde, hastaAnterior).join(' '),
+      anteriorPalabras
+        .slice(
+          desde,
+          hastaAnterior
+        )
+        .join(' '),
 
     actual:
-      actualPalabras.slice(desde, hastaActual).join(' ')
+      actualPalabras
+        .slice(
+          desde,
+          hastaActual
+        )
+        .join(' ')
+
   };
+
 }
+
+
+// ============================================================
+// CORREO
+// ============================================================
 
 async function enviarCorreo(asunto, cuerpo) {
-  const usuario = process.env.GMAIL_USER;
-  const password = process.env.GMAIL_APP_PASSWORD;
-  const destinatario = process.env.ALERT_TO;
 
-  if (!usuario || !password || !destinatario) {
-    throw new Error('Faltan credenciales de correo.');
+  const usuario =
+    process.env.GMAIL_USER;
+
+  const password =
+    process.env.GMAIL_APP_PASSWORD;
+
+  const destinatario =
+    process.env.ALERT_TO;
+
+
+  if (
+    !usuario ||
+    !password ||
+    !destinatario
+  ) {
+
+    throw new Error(
+      'Faltan credenciales de correo.'
+    );
+
   }
 
-  const transporter = nodemailer.createTransport({
-    service: 'gmail',
 
-    auth: {
-      user: usuario,
-      pass: password
-    }
-  });
+  const transporter =
+    nodemailer.createTransport({
+
+      service: 'gmail',
+
+      auth: {
+        user: usuario,
+        pass: password
+      }
+
+    });
+
 
   await transporter.sendMail({
-    from: `"Monitor SICOP 2" <${usuario}>`,
-    to: destinatario,
-    subject: asunto,
-    text: cuerpo
+
+    from:
+      `"Monitor SICOP 2" <${usuario}>`,
+
+    to:
+      destinatario,
+
+    subject:
+      asunto,
+
+    text:
+      cuerpo
+
   });
+
 }
 
+
+// ============================================================
+// CONTROL DE FALLOS
+// ============================================================
+
 async function registrarFallo(error) {
-  let health = cargarJSON(HEALTH_FILE);
+
+  let health =
+    cargarJSON(HEALTH_FILE);
+
 
   if (!health) {
+
     health = {
       fallosConsecutivos: 0,
       alertaEnviada: false
     };
+
   }
 
+
   health.fallosConsecutivos += 1;
-  health.ultimoFallo = new Date().toISOString();
-  health.ultimoError = error.message || String(error);
+
+  health.ultimoFallo =
+    new Date().toISOString();
+
+  health.ultimoError =
+    error.message || String(error);
+
 
   console.log(
     `Fallo consecutivo número ${health.fallosConsecutivos}`
   );
 
+
   if (
     health.fallosConsecutivos >= 3 &&
     !health.alertaEnviada
   ) {
+
     try {
+
       await enviarCorreo(
+
         '⚠️ ALERTA: Monitor SICOP 2 no puede consultar la página',
+
         `
 El Monitor SICOP 2 ha fallado al consultar el expediente
 3 veces consecutivas.
@@ -175,7 +363,10 @@ Refrendo:
 
 ${health.ultimoError}
 
-Esto no significa necesariamente que haya cambiado el expediente.
+Esto NO significa necesariamente que haya cambiado el expediente.
+
+Significa que el monitor no pudo consultar correctamente
+la página durante tres revisiones consecutivas.
 
 El sistema seguirá intentando automáticamente.
 
@@ -185,38 +376,55 @@ ${SICOP_URL}
 
 Fecha de alerta:
 
-${new Date().toLocaleString('es-CR', {
-  timeZone: 'America/Costa_Rica'
-})}
+${new Date().toLocaleString(
+  'es-CR',
+  {
+    timeZone:
+      'America/Costa_Rica'
+  }
+)}
         `
+
       );
 
+
       health.alertaEnviada = true;
+
 
       console.log(
         'Correo de alerta por fallos enviado.'
       );
 
     } catch (correoError) {
+
       console.error(
         'No fue posible enviar la alerta:',
         correoError
       );
+
     }
+
   }
+
 
   guardarJSON(
     HEALTH_FILE,
     health
   );
+
 }
 
+
 async function registrarRecuperacion() {
-  const health = cargarJSON(HEALTH_FILE);
+
+  const health =
+    cargarJSON(HEALTH_FILE);
+
 
   if (!health) {
     return;
   }
+
 
   const huboFallos =
     health.fallosConsecutivos > 0;
@@ -224,10 +432,15 @@ async function registrarRecuperacion() {
   const huboAlerta =
     health.alertaEnviada === true;
 
+
   if (huboAlerta) {
+
     try {
+
       await enviarCorreo(
+
         '✅ Monitor SICOP 2 restablecido',
+
         `
 El Monitor SICOP 2 volvió a consultar correctamente
 la página del expediente.
@@ -240,127 +453,418 @@ Refrendo:
 
 Fecha de recuperación:
 
-${new Date().toLocaleString('es-CR', {
-  timeZone: 'America/Costa_Rica'
-})}
+${new Date().toLocaleString(
+  'es-CR',
+  {
+    timeZone:
+      'America/Costa_Rica'
+  }
+)}
 
 ${SICOP_URL}
         `
+
       );
+
 
       console.log(
         'Correo de recuperación enviado.'
       );
 
     } catch (error) {
+
       console.error(
         'No fue posible enviar correo de recuperación:',
         error
       );
+
     }
+
   }
 
+
   if (huboFallos) {
+
     guardarJSON(
+
       HEALTH_FILE,
+
       {
         fallosConsecutivos: 0,
         alertaEnviada: false,
+
         ultimaRecuperacion:
           new Date().toISOString()
       }
+
     );
+
   }
+
 }
 
+
+// ============================================================
+// CONFIRMACIÓN DE CAMBIOS
+// ============================================================
+
+async function procesarCambio(
+  anterior,
+  contenidoActual,
+  hashActual
+) {
+
+  const pendiente =
+    cargarJSON(PENDING_FILE);
+
+
+  // ----------------------------------------------------------
+  // PRIMERA DETECCIÓN
+  // ----------------------------------------------------------
+
+  if (
+    !pendiente ||
+    pendiente.hash !== hashActual
+  ) {
+
+    guardarJSON(
+
+      PENDING_FILE,
+
+      {
+        hash: hashActual,
+
+        contenido:
+          contenidoActual,
+
+        confirmaciones: 1,
+
+        primeraDeteccion:
+          new Date().toISOString()
+      }
+
+    );
+
+
+    console.log(
+      'Cambio potencial detectado.'
+    );
+
+    console.log(
+      'Se esperará una segunda consulta consecutiva para confirmarlo.'
+    );
+
+
+    return;
+  }
+
+
+  // ----------------------------------------------------------
+  // SEGUNDA DETECCIÓN IGUAL
+  // ----------------------------------------------------------
+
+  pendiente.confirmaciones =
+    (pendiente.confirmaciones || 1) + 1;
+
+  pendiente.ultimaConfirmacion =
+    new Date().toISOString();
+
+
+  guardarJSON(
+    PENDING_FILE,
+    pendiente
+  );
+
+
+  console.log(
+    `Confirmación consecutiva número ${pendiente.confirmaciones}.`
+  );
+
+
+  if (
+    pendiente.confirmaciones < 2
+  ) {
+    return;
+  }
+
+
+  // ----------------------------------------------------------
+  // CAMBIO CONFIRMADO
+  // ----------------------------------------------------------
+
+  console.log(
+    'CAMBIO REAL CONFIRMADO'
+  );
+
+
+  const diferencias =
+    calcularDiferencias(
+      anterior.contenido,
+      contenidoActual
+    );
+
+
+  await enviarCorreo(
+
+    '🚨 CAMBIO CONFIRMADO EN SICOP 2',
+
+    `
+Se detectó y confirmó un cambio en el expediente SICOP.
+
+El cambio fue observado en DOS consultas consecutivas
+antes de generar esta notificación.
+
+Número SICOP:
+20251000759
+
+Refrendo:
+4201
+
+
+================================
+ANTES
+================================
+
+${diferencias.anterior}
+
+
+================================
+AHORA
+================================
+
+${diferencias.actual}
+
+
+================================
+
+Fecha de confirmación:
+
+${new Date().toLocaleString(
+  'es-CR',
+  {
+    timeZone:
+      'America/Costa_Rica'
+  }
+)}
+
+Revisar expediente:
+
+${SICOP_URL}
+    `
+
+  );
+
+
+  // El cambio confirmado pasa a ser
+  // el nuevo estado oficial de referencia.
+
+  guardarJSON(
+
+    STATE_FILE,
+
+    {
+      normalizationVersion:
+        NORMALIZATION_VERSION,
+
+      hash:
+        hashActual,
+
+      contenido:
+        contenidoActual,
+
+      actualizado:
+        new Date().toISOString()
+    }
+
+  );
+
+
+  // Ya no necesitamos el cambio pendiente.
+
+  eliminarArchivo(
+    PENDING_FILE
+  );
+
+
+  console.log(
+    'Correo enviado y nuevo estado confirmado guardado.'
+  );
+
+}
+
+
+// ============================================================
+// MONITOR PRINCIPAL
+// ============================================================
+
 async function main() {
+
   console.log(
     'Iniciando revisión SICOP 2...'
   );
 
-  const browser = await chromium.launch({
-    headless: true
-  });
 
-  const context = await browser.newContext({
-    locale: 'es-CR',
+  const browser =
+    await chromium.launch({
+      headless: true
+    });
 
-    userAgent:
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) ' +
-      'AppleWebKit/537.36 (KHTML, like Gecko) ' +
-      'Chrome/140.0.0.0 Safari/537.36'
-  });
 
-  const page = await context.newPage();
+  const context =
+    await browser.newContext({
+
+      locale:
+        'es-CR',
+
+      userAgent:
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) ' +
+        'AppleWebKit/537.36 (KHTML, like Gecko) ' +
+        'Chrome/140.0.0.0 Safari/537.36'
+
+    });
+
+
+  const page =
+    await context.newPage();
+
 
   try {
+
     await page.goto(
+
       SICOP_URL,
+
       {
-        waitUntil: 'domcontentloaded',
-        timeout: 90000
+        waitUntil:
+          'domcontentloaded',
+
+        timeout:
+          90000
       }
+
     );
 
-    await page.waitForTimeout(3000);
+
+    await page.waitForTimeout(
+      3000
+    );
+
 
     const html =
       await page.content();
 
+
     const bodyText =
-      await page.locator('body').innerText();
+      await page
+        .locator('body')
+        .innerText();
+
 
     console.log(
       'Tamaño HTML:',
       html.length
     );
 
+
+    // --------------------------------------------------------
+    // VALIDACIÓN DE RESPUESTA
+    // --------------------------------------------------------
+
     if (
+
       bodyText.includes(
         'No fue posible acceder a la página solicitada'
       ) ||
+
       html.length < 5000
+
     ) {
+
       throw new Error(
         'SICOP bloqueó o no entregó correctamente la página.'
       );
+
     }
 
+
     const contenidoActual =
-      extraerContenidoRelevante(html);
+      extraerContenidoRelevante(
+        html
+      );
+
 
     const hashActual =
-      crearHash(contenidoActual);
+      crearHash(
+        contenidoActual
+      );
+
 
     console.log(
       'Hash actual:',
       hashActual
     );
 
+
     console.log(
       'Longitud contenido:',
       contenidoActual.length
     );
 
+
+    // Si la consulta fue correcta,
+    // restablecemos el contador de fallos.
+
     await registrarRecuperacion();
 
-    const anterior =
-      cargarJSON(STATE_FILE);
 
-    if (!anterior) {
+    const anterior =
+      cargarJSON(
+        STATE_FILE
+      );
+
+
+    // ========================================================
+    // PRIMERA EJECUCIÓN O MIGRACIÓN DESDE LA VERSIÓN ANTERIOR
+    // ========================================================
+
+    if (
+      !anterior ||
+      anterior.normalizationVersion !== NORMALIZATION_VERSION
+    ) {
+
       guardarJSON(
+
         STATE_FILE,
+
         {
-          hash: hashActual,
-          contenido: contenidoActual,
+          normalizationVersion:
+            NORMALIZATION_VERSION,
+
+          hash:
+            hashActual,
+
+          contenido:
+            contenidoActual,
+
           actualizado:
             new Date().toISOString()
         }
+
       );
 
-      await enviarCorreo(
-        '✅ Monitor SICOP 2 activado',
-        `
+
+      eliminarArchivo(
+        PENDING_FILE
+      );
+
+
+      if (!anterior) {
+
+        await enviarCorreo(
+
+          '✅ Monitor SICOP 2 activado',
+
+          `
 El Monitor SICOP 2 quedó activado correctamente.
 
 Número SICOP:
@@ -369,112 +873,127 @@ Número SICOP:
 Refrendo:
 4201
 
-Se guardó el estado inicial completo de la página.
+Se guardó el estado inicial de referencia.
 
-A partir de ahora se notificará cualquier cambio detectado
-en el contenido del expediente.
+El monitor:
+
+- ignora campos técnicos de firma/certificado
+  identificados como inestables;
+- detecta cambios en el resto del expediente;
+- exige dos consultas consecutivas iguales
+  antes de enviar una alerta.
 
 ${SICOP_URL}
-        `
-      );
+          `
 
-      console.log(
-        'Estado inicial guardado.'
-      );
+        );
+
+      } else {
+
+        console.log(
+          'Se actualizó automáticamente la línea base al nuevo sistema de comparación.'
+        );
+
+        console.log(
+          'No se envió alerta por esta migración.'
+        );
+
+      }
+
 
       return;
+
     }
+
+
+    // ========================================================
+    // SIN CAMBIOS
+    // ========================================================
 
     if (
       anterior.hash === hashActual
     ) {
+
       console.log(
         'Sin cambios.'
       );
 
+
+      // Si antes había un cambio pendiente,
+      // pero SICOP volvió al estado original,
+      // era una variación transitoria.
+
+      if (
+        fs.existsSync(
+          PENDING_FILE
+        )
+      ) {
+
+        eliminarArchivo(
+          PENDING_FILE
+        );
+
+
+        console.log(
+          'Se descartó el cambio pendiente porque no se confirmó.'
+        );
+
+      }
+
+
       return;
+
     }
 
-    console.log(
-      'CAMBIO DETECTADO'
+
+    // ========================================================
+    // HAY UNA DIFERENCIA: CONFIRMARLA
+    // ========================================================
+
+    await procesarCambio(
+      anterior,
+      contenidoActual,
+      hashActual
     );
 
-    const diferencias =
-      calcularDiferencias(
-        anterior.contenido,
-        contenidoActual
-      );
-
-    await enviarCorreo(
-      '🚨 CAMBIO DETECTADO EN SICOP 2',
-      `
-Se detectó un cambio en el expediente SICOP.
-
-Número SICOP:
-20251000759
-
-Refrendo:
-4201
-
-================================
-ANTES
-================================
-
-${diferencias.anterior}
-
-================================
-AHORA
-================================
-
-${diferencias.actual}
-
-================================
-
-Fecha de detección:
-
-${new Date().toLocaleString('es-CR', {
-  timeZone: 'America/Costa_Rica'
-})}
-
-Revisar expediente:
-
-${SICOP_URL}
-      `
-    );
-
-    guardarJSON(
-      STATE_FILE,
-      {
-        hash: hashActual,
-        contenido: contenidoActual,
-        actualizado:
-          new Date().toISOString()
-      }
-    );
-
-    console.log(
-      'Cambio detectado, correo enviado y estado actualizado.'
-    );
 
   } finally {
+
     await browser.close();
+
   }
+
 }
 
+
+// ============================================================
+// EJECUCIÓN
+// ============================================================
+
 main().catch(async error => {
+
   console.error(
     'ERROR EN MONITOR:',
     error
   );
 
+
   try {
-    await registrarFallo(error);
+
+    await registrarFallo(
+      error
+    );
+
   } catch (healthError) {
+
     console.error(
       'Error registrando fallo:',
       healthError
     );
+
   }
 
+
   process.exit(1);
+
 });
