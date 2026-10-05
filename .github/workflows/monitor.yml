@@ -54,6 +54,12 @@ jobs:
             git add health.json
           fi
 
+          if [ -f pending_change.json ]; then
+            git add pending_change.json
+          else
+            git add -u pending_change.json 2>/dev/null || true
+          fi
+
           if git diff --cached --quiet; then
             echo "No hay cambios que guardar."
           else
