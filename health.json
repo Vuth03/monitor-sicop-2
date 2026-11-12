@@ -1,7 +1,7 @@
 {
-  "fallosConsecutivos": 1,
+  "fallosConsecutivos": 2,
   "alertaEnviada": false,
   "ultimaRecuperacion": "2026-10-30T17:26:14.159Z",
-  "ultimoFallo": "2026-11-12T17:36:20.910Z",
+  "ultimoFallo": "2026-11-12T17:41:21.714Z",
   "ultimoError": "SICOP bloqueó o no entregó correctamente la página."
 }
